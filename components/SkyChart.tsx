@@ -37,14 +37,34 @@ const RADIUS: Record<number, number> = {
 type Phase = "free" | "tour";
 type Cam = { x: number; y: number; s: number };
 
-/* camera the visitor arrives with — slightly pulled back, below home */
+/* camera the visitor arrives with - slightly pulled back, below home */
 const ARRIVAL_CAM: Cam = { x: HOME_VIEW.cx, y: HOME_VIEW.cy + 6, s: 0.94 };
-const ZOOM_MIN = 0.65;
 const ZOOM_MAX = 2.4;
 const PAR_MID = 0.65;
 const PAR_DEEP = 0.35;
-/* camera-center bounds — the window may show margin, the dust covers it */
-const BOUNDS = { minX: WORLD.minX + 16, maxX: WORLD.maxX - 16, minY: WORLD.minY + 10, maxY: WORLD.maxY - 10 };
+/* everything drawn, labels included - the frame the full-sky view fits */
+const SKY_FIT = { cx: 100, cy: 64, w: 176, h: 116 };
+/* how far past the world edge the viewport may wander */
+const OVERSCAN = 26;
+
+/* the visible window in world units at scale 1, plus the zoom floor that
+   fits the whole sky - both depend on the real element size, so they are
+   measured per device and on resize */
+type Viewport = { hw: number; hh: number; minZoom: number };
+
+function clampView(c: Cam, vp: Viewport, soft = false) {
+  c.s = Math.min(ZOOM_MAX, Math.max(vp.minZoom, c.s));
+  const hw = vp.hw / c.s;
+  const hh = vp.hh / c.s;
+  const axis = (v: number, lo: number, hi: number, center: number) => {
+    if (lo > hi) return center; // viewport wider than the world: pin to center
+    if (v < lo) return soft ? lo + (v - lo) * 0.25 : lo;
+    if (v > hi) return soft ? hi + (v - hi) * 0.25 : hi;
+    return v;
+  };
+  c.x = axis(c.x, WORLD.minX + hw - OVERSCAN, WORLD.maxX - hw + OVERSCAN, (WORLD.minX + WORLD.maxX) / 2);
+  c.y = axis(c.y, WORLD.minY + hh - OVERSCAN, WORLD.maxY - hh + OVERSCAN, (WORLD.minY + WORLD.maxY) / 2);
+}
 
 function camCSS(x: number, y: number, s: number) {
   return `translate(${50 - s * x}px, ${31 - s * y}px) scale(${s})`;
@@ -163,6 +183,8 @@ export default function SkyChart() {
 
   const camRef = useRef<Cam>({ ...ARRIVAL_CAM });
   const velRef = useRef({ x: 0, y: 0 });
+  const viewRef = useRef<Viewport>({ hw: 50, hh: 31, minZoom: 0.42 });
+  const lastBoostRef = useRef(1);
   const rafRef = useRef<number | null>(null);
   const lastTickRef = useRef(0);
   const movingRef = useRef(false);
@@ -207,6 +229,14 @@ export default function SkyChart() {
 
   const applyCam = useCallback(() => {
     const cam = camRef.current;
+    /* level-of-detail: zoomed far out, dots and region names grow while
+       star names fade, so the overview stays readable on small screens */
+    const boost = Math.round(Math.min(2.4, Math.max(1, Math.pow(0.62 / cam.s, 0.7))) * 40) / 40;
+    if (boost !== lastBoostRef.current && obsRef.current) {
+      lastBoostRef.current = boost;
+      obsRef.current.style.setProperty("--zoomBoost", String(boost));
+      obsRef.current.classList.toggle("obs--far", cam.s < 0.42);
+    }
     if (worldRef.current) worldRef.current.style.transform = camCSS(cam.x, cam.y, cam.s);
     if (midRef.current) {
       const p = parallaxOf(cam, PAR_MID);
@@ -224,17 +254,22 @@ export default function SkyChart() {
     }
   }, []);
 
-  const clampCam = useCallback((soft = false) => {
-    const cam = camRef.current;
-    const springify = (v: number, lo: number, hi: number) => {
-      if (v < lo) return soft ? lo + (v - lo) * 0.25 : lo;
-      if (v > hi) return soft ? hi + (v - hi) * 0.25 : hi;
-      return v;
+  const clampCam = useCallback((soft = false) => clampView(camRef.current, viewRef.current, soft), []);
+
+  /* measure the visible window and the fit-everything zoom floor */
+  const refreshViewport = useCallback(() => {
+    const { rect, pxPerUnit } = metrics();
+    const w = rect.width / pxPerUnit;
+    const h = rect.height / pxPerUnit;
+    viewRef.current = {
+      hw: w / 2,
+      hh: h / 2,
+      minZoom: Math.max(0.1, Math.min(0.85, Math.min(w / SKY_FIT.w, h / SKY_FIT.h))),
     };
-    cam.x = springify(cam.x, BOUNDS.minX, BOUNDS.maxX);
-    cam.y = springify(cam.y, BOUNDS.minY, BOUNDS.maxY);
-    cam.s = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, cam.s));
-  }, []);
+  }, [metrics]);
+
+  /* window in world units, for fitting flights to the real screen */
+  const winOf = useCallback(() => ({ w: viewRef.current.hw * 2, h: viewRef.current.hh * 2 }), []);
 
   /* hover bookkeeping - position is computed in handlers, never in render.
      Clearing is deferred slightly so the pointer can travel from the star
@@ -309,22 +344,24 @@ export default function SkyChart() {
           vel.x *= decay;
           vel.y *= decay;
           /* kill velocity on the axis that hit the wall */
-          if (cam.x <= BOUNDS.minX || cam.x >= BOUNDS.maxX) vel.x = 0;
-          if (cam.y <= BOUNDS.minY || cam.y >= BOUNDS.maxY) vel.y = 0;
+          const px = cam.x;
+          const py = cam.y;
           clampCam();
+          if (cam.x !== px) vel.x = 0;
+          if (cam.y !== py) vel.y = 0;
           running = true;
         } else {
           /* ease back from any rubber-band overshoot */
-          const cx = Math.min(Math.max(cam.x, BOUNDS.minX), BOUNDS.maxX);
-          const cy = Math.min(Math.max(cam.y, BOUNDS.minY), BOUNDS.maxY);
+          const t = { ...cam };
+          clampView(t, viewRef.current);
           const k = Math.min(1, dt / 140);
-          if (Math.abs(cx - cam.x) > 0.05 || Math.abs(cy - cam.y) > 0.05) {
-            cam.x += (cx - cam.x) * k;
-            cam.y += (cy - cam.y) * k;
+          if (Math.abs(t.x - cam.x) > 0.05 || Math.abs(t.y - cam.y) > 0.05) {
+            cam.x += (t.x - cam.x) * k;
+            cam.y += (t.y - cam.y) * k;
             running = true;
           } else {
-            cam.x = cx;
-            cam.y = cy;
+            cam.x = t.x;
+            cam.y = t.y;
           }
         }
       } else {
@@ -352,13 +389,11 @@ export default function SkyChart() {
   const flyTo = useCallback(
     (v: View, dur = 1300) => {
       velRef.current = { x: 0, y: 0 };
+      const to = { x: v.cx, y: v.cy, s: v.s };
+      clampView(to, viewRef.current);
       flightRef.current = {
         from: { ...camRef.current },
-        to: {
-          x: Math.min(Math.max(v.cx, BOUNDS.minX), BOUNDS.maxX),
-          y: Math.min(Math.max(v.cy, BOUNDS.minY), BOUNDS.maxY),
-          s: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.s)),
-        },
+        to,
         start: performance.now(),
         dur: reducedRef.current ? 0 : dur,
       };
@@ -398,6 +433,18 @@ export default function SkyChart() {
     [applyCam, commitReveal]
   );
 
+  /* measure the viewport before anything flies, and again on resize */
+  useEffect(() => {
+    refreshViewport();
+    const onResize = () => {
+      refreshViewport();
+      clampCam();
+      applyCam();
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [refreshViewport, clampCam, applyCam]);
+
   /* deep link: /#s=oscar skips the hero */
   useEffect(() => {
     reducedRef.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -408,15 +455,17 @@ export default function SkyChart() {
         setRevealed(true);
         obsRef.current?.style.setProperty("--revealP", "1");
         setSelectedId(m[1]);
-        const v = viewForStars([m[1]], 1.3);
+        refreshViewport();
+        const v = viewForStars([m[1]], 1.3, 16, winOf());
         camRef.current = { x: v.cx, y: v.cy, s: v.s };
+        clampCam();
         applyCam();
       }
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
-  }, [applyCam]);
+  }, [applyCam, clampCam, refreshViewport, winOf]);
 
   const select = useCallback(
     (id: string | null) => {
@@ -446,10 +495,17 @@ export default function SkyChart() {
     flyTo(HOME_VIEW);
   }, [flyTo]);
 
+  /* the whole sky in one frame - min zoom fits it on this screen */
+  const fullSky = useCallback(() => {
+    refreshViewport();
+    flyTo({ cx: SKY_FIT.cx, cy: SKY_FIT.cy, s: viewRef.current.minZoom }, 1200);
+    setHintOn(false);
+  }, [flyTo, refreshViewport]);
+
   /* camera + dimming follow the tour */
   useEffect(() => {
-    if (chapter) flyTo(viewForStars(chapter.focus, chapter.maxScale));
-  }, [chapter, flyTo]);
+    if (chapter) flyTo(viewForStars(chapter.focus, chapter.maxScale, 16, winOf()));
+  }, [chapter, flyTo, winOf]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -517,7 +573,7 @@ export default function SkyChart() {
         /* pinch-zoom trackpad gesture / ctrl+wheel — zoom about the cursor */
         const wx = cam.x + (e.clientX - rect.left - rect.width / 2) / (pxPerUnit * cam.s);
         const wy = cam.y + (e.clientY - rect.top - rect.height / 2) / (pxPerUnit * cam.s);
-        const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, cam.s * Math.exp(-e.deltaY * k * 0.002)));
+        const next = Math.min(ZOOM_MAX, Math.max(viewRef.current.minZoom, cam.s * Math.exp(-e.deltaY * k * 0.002)));
         cam.x = wx - (e.clientX - rect.left - rect.width / 2) / (pxPerUnit * next);
         cam.y = wy - (e.clientY - rect.top - rect.height / 2) / (pxPerUnit * next);
         cam.s = next;
@@ -594,7 +650,7 @@ export default function SkyChart() {
         const cam = camRef.current;
         const { rect, pxPerUnit } = metrics();
         const dist = Math.hypot(a.x - b.x, a.y - b.y);
-        const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, pinch.s0 * (dist / pinch.dist0)));
+        const next = Math.min(ZOOM_MAX, Math.max(viewRef.current.minZoom, pinch.s0 * (dist / pinch.dist0)));
         const midX = (a.x + b.x) / 2;
         const midY = (a.y + b.y) / 2;
         cam.s = next;
@@ -707,13 +763,13 @@ export default function SkyChart() {
   const onGCFlight = useCallback(
     (f: Flight) => {
       window.clearTimeout(gcOpenTimer.current);
-      flyTo(viewForStars(f.focus, f.maxScale ?? 1.6));
+      flyTo(viewForStars(f.focus, f.maxScale ?? 1.6, 16, winOf()));
       setGcLit(f.lit);
       if (f.open) {
         gcOpenTimer.current = window.setTimeout(() => select(f.open!), 700);
       }
     },
-    [flyTo, select]
+    [flyTo, select, winOf]
   );
 
   /* hover — mouse only; touch taps open the panel directly */
@@ -885,7 +941,11 @@ export default function SkyChart() {
               {/* region names */}
               <g aria-hidden="true">
                 {regions.map((r) => (
-                  <g key={r.name} className="obs__regionGroup">
+                  <g
+                    key={r.name}
+                    className="obs__regionGroup"
+                    style={{ transformOrigin: `${r.x}px ${r.y}px`, transformBox: "view-box" }}
+                  >
                     <text x={r.x} y={r.y} className="obs__region">
                       {r.name}
                     </text>
@@ -935,7 +995,11 @@ export default function SkyChart() {
                       key={s.id}
                       data-star={s.id}
                       className={`obs__star obs__star--${s.kind} ${active ? "is-active" : ""} ${lit ? "is-lit" : ""}`}
-                      style={{ animationDelay: `${0.15 + i * 0.06}s` }}
+                      style={{
+                        animationDelay: `${0.15 + i * 0.06}s`,
+                        transformOrigin: `${s.x}px ${s.y}px`,
+                        transformBox: "view-box",
+                      }}
                       role="button"
                       tabIndex={revealed ? 0 : -1}
                       aria-label={`${s.name} — ${s.blurb}`}
@@ -1124,6 +1188,9 @@ export default function SkyChart() {
             <button className="obs__control" onClick={() => flyTo(HOME_VIEW)} aria-label="Recenter the sky">
               ⌖ home
             </button>
+            <button className="obs__control" onClick={fullSky} aria-label="Zoom out to see the whole sky">
+              ⛶ full sky
+            </button>
             <button className="obs__control" onClick={() => setIndexOpen((v) => !v)} aria-expanded={indexOpen}>
               index
             </button>
@@ -1239,7 +1306,7 @@ export default function SkyChart() {
                           className="obs__indexItem"
                           onClick={() => {
                             select(id);
-                            flyTo(viewForStars([id], Math.max(camRef.current.s, 1.1)), 900);
+                            flyTo(viewForStars([id], Math.max(camRef.current.s, 1.1), 16, winOf()), 900);
                           }}
                         >
                           <span className="obs__indexItemName">{s.name}</span>

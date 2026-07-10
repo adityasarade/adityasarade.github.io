@@ -378,7 +378,13 @@ export function starById(id: string): Star | undefined {
 
 export type View = { cx: number; cy: number; s: number };
 
-export function viewForStars(ids: string[], maxScale = 1.6, pad = 16): View {
+export function viewForStars(
+  ids: string[],
+  maxScale = 1.6,
+  pad = 16,
+  /* the visible window in world units - pass the real one on small screens */
+  win: { w: number; h: number } = { w: 100, h: 62 }
+): View {
   const pts = ids.map(starById).filter((s): s is Star => Boolean(s));
   if (pts.length === 0) return { ...HOME_VIEW, cx: HOME_VIEW.cx, cy: HOME_VIEW.cy, s: HOME_VIEW.s };
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -388,11 +394,11 @@ export function viewForStars(ids: string[], maxScale = 1.6, pad = 16): View {
     minY = Math.min(minY, p.y);
     maxY = Math.max(maxY, p.y);
   }
-  const fit = Math.min(100 / (maxX - minX + pad), 62 / (maxY - minY + pad));
+  const fit = Math.min(win.w / (maxX - minX + pad), win.h / (maxY - minY + pad));
   return {
     cx: (minX + maxX) / 2,
     cy: (minY + maxY) / 2,
-    s: Math.min(maxScale, Math.max(0.7, fit)),
+    s: Math.min(maxScale, Math.max(0.35, fit)),
   };
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import type { Star } from "@/lib/sky";
-import { caseStudies, workIndex, productionSystems, experience } from "@/lib/data";
+import { caseStudies, workIndex, productionSystems, experience, otherBuilds, site } from "@/lib/data";
 import { CaseSchematic } from "./Schematics";
 
 /* Floating preview shown next to the hovered star. Clicking it opens
@@ -15,6 +15,7 @@ type Preview = {
   line: string;
   stat?: string;
   schematic?: "gateway" | "voice" | "agent" | "memory";
+  links?: { label: string; href: string }[];
   cta: string;
 };
 
@@ -32,6 +33,7 @@ function previewFor(star: Star): Preview {
         tagline: cs?.tagline,
         stat: wi?.headline,
         schematic: cs?.schematic,
+        links: cs?.links,
         cta: "click for the case study",
       };
     }
@@ -58,9 +60,24 @@ function previewFor(star: Star): Preview {
     case "principles":
       return { ...base, badge: "how I work" };
     case "registry":
-      return { ...base, badge: "package registry", cta: "click for install commands" };
-    case "other":
-      return { ...base, badge: star.kind === "oss" ? "open source — on PyPI" : "side project" };
+      return {
+        ...base,
+        badge: "package registry",
+        links: [
+          { label: "GitHub", href: site.links.github },
+          { label: "npm", href: site.links.npm },
+          { label: "PyPI", href: site.links.pypi },
+        ],
+        cta: "click for install commands",
+      };
+    case "other": {
+      const o = otherBuilds[star.panel.index];
+      return {
+        ...base,
+        badge: star.kind === "oss" ? "open source — on PyPI" : "side project",
+        links: o ? [{ label: o.href.includes("pypi") ? "PyPI" : "GitHub", href: o.href }] : undefined,
+      };
+    }
     case "contact":
       return { ...base, badge: "transmission", cta: "click to get in touch" };
   }
@@ -101,6 +118,25 @@ export default function PreviewCard({
         </div>
       )}
       {p.stat && <p className="previewCard__stat label">{p.stat}</p>}
+      {p.links && p.links.length > 0 && (
+        <p className="previewCard__links">
+          {p.links.map((l) => (
+            <a
+              key={l.href}
+              className="link"
+              href={l.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              tabIndex={-1}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {l.label} ↗
+            </a>
+          ))}
+        </p>
+      )}
       <p className="previewCard__cta label">{p.cta} ↳</p>
     </div>
   );

@@ -1777,7 +1777,7 @@ html:not([data-theme="paper"]) .prin .label {
   font-family: var(--font-serif), serif;
   font-size: 1.75px;
   fill: var(--ink-soft);
-  transition: fill 0.25s ease;
+  transition: fill 0.25s ease, opacity 0.3s ease;
   paint-order: stroke;
   stroke: var(--paper);
   stroke-width: 0.5px;
@@ -2471,7 +2471,23 @@ html:not([data-theme="paper"]) .prin .label {
 .obs__star,
 .obs__edgeGroup,
 .obs__regionGroup {
-  transition: opacity 0.8s ease;
+  transition: opacity 0.8s ease, transform 0.25s ease;
+}
+
+/* level-of-detail when zoomed far out: dots and region names grow
+   (JS sets --zoomBoost), star names step aside on tiny screens */
+.obs__star,
+.obs__regionGroup {
+  transform: scale(var(--zoomBoost, 1));
+}
+
+.obs--far .obs__name,
+.obs--far .obs__sublabel {
+  opacity: 0;
+}
+
+.obs__sublabel {
+  transition: opacity 0.3s ease;
 }
 
 .obs__star.is-lit .obs__core {
@@ -2765,6 +2781,14 @@ html:not([data-theme="paper"]) .prin .label {
   color: var(--brass);
   letter-spacing: 0.08em;
   line-height: 1.5;
+}
+
+.previewCard__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  font-size: var(--text-sm);
+  margin-top: 0.1rem;
 }
 
 .previewCard__cta {
